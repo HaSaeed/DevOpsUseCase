@@ -1,0 +1,10 @@
+replicaCount: 1
+
+image:
+  repository: hsaeed/hawkai-python
+  tag: latest-app2
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80

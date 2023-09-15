@@ -1,0 +1,82 @@
+# Defining pipeline defaults
+default:
+  image: python:3.9-slim
+  tags:
+    - shared-amd64-low  # Using this to set-up gitlab runner (required for my setup)
+
+stages:
+  - build-artifact
+  - unit-test
+  - dockerize
+  - deploy
+
+variables:
+  DOCKER_IMAGE: hsaeed/hawkai-python:${CI_COMMIT_SHA}   # My Docker Hub repository with CI Commit
+
+build:
+  stage: build-artifact
+  script:
+    - cd app1/
+    - python setup.py sdist bdist_wheel
+    - cd ../app2/
+    - python setup.py sdist bdist_wheel
+    - cd ../
+  artifacts:
+    paths:
+      - app1/*
+      - app2/*
+    expire_in: 1 day
+
+test_artifact:
+  stage: unit-test
+  needs: [ "build" ]
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive   # To get artifacts
+  script:
+    - cd app1/
+    - pip install dist/hello_app-0.1-py3-none-any.whl
+    - cd ../app2/
+    - pip install dist/world_app-0.1-py3-none-any.whl
+    - cd ../
+    - ./utest.sh
+
+dockerize:
+  stage: dockerize
+  image: docker:latest
+  services:
+    - docker:dind   # For enabling docker build
+  needs: [ "test_artifact",  "build"]
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive   # To get artifacts
+  before_script:
+    - docker login -u "$DOCKER_USERNAME" -p "$DOCKER_PASSWORD"  # Credentials are provided in gitlab cicd variables
+  script:
+    - cd app1/
+    - docker build -t "${DOCKER_IMAGE}"-app1 .
+    - docker push "${DOCKER_IMAGE}"-app1
+
+    - cd ../app2/
+    - docker build -t "${DOCKER_IMAGE}"-app2 .
+    - docker push "${DOCKER_IMAGE}"-app2
+  only:
+    variables:
+      - $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH   # Runs only when merged to main/master or default branch
+
+deploy:
+  stage: deploy
+  image: alpine/helm:latest   # This image has both helm and kubectl
+  needs: [ "dockerize" ]
+  script:
+    - echo "$KUBECONFIG_CONTENT" > kubeconfig.yml # KUBECONFIG_CONTENT is set in gitlab cicd variables
+    - export KUBECONFIG=kubeconfig.yml
+
+    # Deploy app1
+    - cd Helm/app1
+    - helm upgrade --install app1 . --set image.tag=${CI_COMMIT_SHA}-app1
+
+    # Deploy app2
+    - cd Helm/app2
+    - helm upgrade --install app2 . --set image.tag=${CI_COMMIT_SHA}-app2
+  only:
+    variables:
+      - $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH   # Runs only when merged to main/master or default branch
